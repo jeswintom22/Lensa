@@ -1,0 +1,29 @@
+# Museum Guide App - Data Pipeline Requirements
+# Python 3.8+
+
+# Image Processing & Computer Vision
+opencv-python>=4.8.0
+opencv-contrib-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# Database
+# sqlite3 is included in Python standard library
+
+# HTTP Requests
+requests>=2.31.0
+urllib3>=2.0.0
+
+# Audio Generation
+gTTS>=2.3.0
+pyttsx3>=2.90  # Alternative offline TTS
+
+# Data Processing
+pandas>=2.0.0
+
+# Progress bars (optional but nice)
+tqdm>=4.65.0
+
+# Testing (optional)
+pytest>=7.4.0
+pytest-cov>=4.1.0
