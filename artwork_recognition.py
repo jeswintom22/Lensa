@@ -1,335 +1,334 @@
 """
-Image Recognition Engine for Museum Guide App
-Uses ORB (Oriented FAST and Rotated BRIEF) for feature matching
+Artwork recognition pipeline for Lensa.
+
+Features:
+1. Load artwork images from ./images.
+2. Extract ORB descriptors with OpenCV.
+3. Save descriptors as SQLite BLOBs.
+4. Accept query image path input.
+5. Compare query descriptors against all stored descriptors.
+6. Return best matching artwork + confidence.
+7. Return None when confidence is below threshold.
 """
+
+from __future__ import annotations
+
+import argparse
+import pickle
+import sqlite3
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-import sqlite3
-import pickle
-from pathlib import Path
-from typing import List, Tuple, Optional
-import urllib.request
-from io import BytesIO
-from PIL import Image
+from tqdm import tqdm
+
 
 class ArtworkRecognitionEngine:
-    """
-    Handles image recognition for artworks using feature matching
-    No ML/AI tokens needed - runs completely locally!
-    """
-    
-    def __init__(self, db_path: str = "museum_guide.db"):
-        self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
-        
-        # Initialize ORB detector
-        # ORB is free, fast, and works well for artwork recognition
-        self.orb = cv2.ORB_create(
-            nfeatures=2000,        # Number of features to detect
-            scaleFactor=1.2,       # Pyramid decimation ratio
-            nlevels=8,             # Number of pyramid levels
-            edgeThreshold=31,      # Border size
-            firstLevel=0,
-            WTA_K=2,
-            scoreType=cv2.ORB_HARRIS_SCORE,
-            patchSize=31
-        )
-        
-        # Create matcher for feature matching
-        # Using BFMatcher (Brute Force) - simple and effective
+    def __init__(
+        self,
+        db_path: str = "museum_guide.db",
+        images_dir: str = "images",
+        nfeatures: int = 2000,
+    ) -> None:
+        self.db_path = Path(db_path)
+        self.images_dir = Path(images_dir)
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.row_factory = sqlite3.Row
+        self.orb = cv2.ORB_create(nfeatures=nfeatures)
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
-        
-        print("✓ Recognition engine initialized")
-    
-    def download_image(self, url: str) -> Optional[np.ndarray]:
-        """Download image from URL and convert to OpenCV format"""
-        try:
-            with urllib.request.urlopen(url, timeout=10) as response:
-                image_data = response.read()
-                image = Image.open(BytesIO(image_data))
-                # Convert to OpenCV format (BGR)
-                return cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        except Exception as e:
-            print(f"Error downloading image: {e}")
-            return None
-    
-    def load_image(self, image_path: str) -> Optional[np.ndarray]:
-        """Load image from file"""
-        img = cv2.imread(image_path)
-        if img is None:
-            print(f"Error loading image: {image_path}")
-        return img
-    
-    def extract_features(self, image: np.ndarray) -> Tuple[List, np.ndarray]:
-        """
-        Extract ORB features from an image
-        Returns keypoints and descriptors
-        """
-        # Convert to grayscale (feature detection works on grayscale)
+        self._ensure_tables()
+
+    def _ensure_tables(self) -> None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS artwork_features (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                artwork_id INTEGER NOT NULL,
+                feature_descriptor BLOB NOT NULL,
+                feature_type TEXT DEFAULT 'orb',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (artwork_id) REFERENCES artworks(id)
+            )
+            """
+        )
+        self.conn.commit()
+
+    @staticmethod
+    def _parse_met_object_id_from_filename(image_path: Path) -> Optional[int]:
+        stem = image_path.stem.strip()
+        if stem.isdigit():
+            return int(stem)
+        return None
+
+    def _extract_orb_descriptors(self, image: np.ndarray) -> Optional[np.ndarray]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # Detect keypoints and compute descriptors
-        keypoints, descriptors = self.orb.detectAndCompute(gray, None)
-        
-        return keypoints, descriptors
-    
-    def preprocess_reference_image(self, image: np.ndarray) -> np.ndarray:
-        """
-        Preprocess reference images for better feature extraction
-        """
-        # Resize if too large (for faster processing)
-        max_dimension = 1200
-        height, width = image.shape[:2]
-        
-        if max(height, width) > max_dimension:
-            scale = max_dimension / max(height, width)
-            new_width = int(width * scale)
-            new_height = int(height * scale)
-            image = cv2.resize(image, (new_width, new_height))
-        
-        # Enhance contrast (helps with museum lighting variations)
-        lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        l = clahe.apply(l)
-        enhanced = cv2.merge([l, a, b])
-        enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
-        
-        return enhanced
-    
-    def build_reference_database(self):
-        """
-        Process all artworks in database and extract features
-        Run this once after adding new artworks
-        """
+        _keypoints, descriptors = self.orb.detectAndCompute(gray, None)
+        return descriptors
+
+    def _load_artwork_index(self) -> Dict[int, sqlite3.Row]:
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT id, met_object_id, title, image_url 
-            FROM artworks 
-            WHERE image_url IS NOT NULL AND image_url != ''
-        """)
-        
-        artworks = cursor.fetchall()
-        print(f"\n🔨 Building reference database for {len(artworks)} artworks...")
-        
-        success_count = 0
-        
-        for artwork_id, met_id, title, image_url in artworks:
-            print(f"  Processing: {title[:50]}...", end=" ")
-            
-            # Download image
-            image = self.download_image(image_url)
+        cursor.execute("SELECT id, met_object_id, title FROM artworks")
+        rows = cursor.fetchall()
+        index: Dict[int, sqlite3.Row] = {}
+        for row in rows:
+            met_id = row["met_object_id"]
+            if met_id is not None:
+                index[int(met_id)] = row
+        return index
+
+    def build_feature_database(self) -> Dict[str, int]:
+        """
+        Load all images from images_dir, extract ORB descriptors,
+        and save descriptors as BLOBs in SQLite.
+        """
+        if not self.images_dir.exists():
+            raise FileNotFoundError(f"Images directory not found: {self.images_dir}")
+
+        artwork_index = self._load_artwork_index()
+        image_paths: List[Path] = []
+        for ext in ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.bmp"):
+            image_paths.extend(self.images_dir.glob(ext))
+
+        image_paths = sorted(image_paths)
+
+        stats = {
+            "images_found": len(image_paths),
+            "saved_features": 0,
+            "skipped_no_met_id": 0,
+            "skipped_not_in_db": 0,
+            "skipped_load_error": 0,
+            "skipped_no_features": 0,
+        }
+
+        cursor = self.conn.cursor()
+
+        for image_path in tqdm(image_paths, desc="Extracting ORB", unit="image"):
+            met_object_id = self._parse_met_object_id_from_filename(image_path)
+            if met_object_id is None:
+                stats["skipped_no_met_id"] += 1
+                continue
+
+            artwork = artwork_index.get(met_object_id)
+            if artwork is None:
+                stats["skipped_not_in_db"] += 1
+                continue
+
+            image = cv2.imread(str(image_path))
             if image is None:
-                print("✗ Download failed")
+                stats["skipped_load_error"] += 1
                 continue
-            
-            # Preprocess
-            image = self.preprocess_reference_image(image)
-            
-            # Extract features
-            keypoints, descriptors = self.extract_features(image)
-            
+
+            descriptors = self._extract_orb_descriptors(image)
             if descriptors is None or len(descriptors) == 0:
-                print("✗ No features found")
+                stats["skipped_no_features"] += 1
                 continue
-            
-            # Save to database
-            descriptor_blob = pickle.dumps(descriptors)
-            
-            cursor.execute("""
-                INSERT OR REPLACE INTO artwork_features 
-                (artwork_id, feature_descriptor, feature_type)
-                VALUES (?, ?, ?)
-            """, (artwork_id, descriptor_blob, 'orb'))
-            
-            self.conn.commit()
-            success_count += 1
-            print(f"✓ ({len(keypoints)} features)")
-        
-        print(f"\n✓ Successfully processed {success_count}/{len(artworks)} artworks")
-    
-    def recognize_artwork(self, 
-                         query_image: np.ndarray, 
-                         min_matches: int = 30,
-                         match_threshold: float = 0.7) -> Optional[Tuple[int, float, int]]:
+
+            descriptor_blob = sqlite3.Binary(
+                pickle.dumps(descriptors, protocol=pickle.HIGHEST_PROTOCOL)
+            )
+
+            cursor.execute(
+                "DELETE FROM artwork_features WHERE artwork_id = ? AND feature_type = 'orb'",
+                (artwork["id"],),
+            )
+            cursor.execute(
+                """
+                INSERT INTO artwork_features (artwork_id, feature_descriptor, feature_type)
+                VALUES (?, ?, 'orb')
+                """,
+                (artwork["id"], descriptor_blob),
+            )
+            stats["saved_features"] += 1
+
+        self.conn.commit()
+        return stats
+
+    def _compute_match_confidence(
+        self,
+        query_desc: np.ndarray,
+        ref_desc: np.ndarray,
+        ratio_test: float,
+    ) -> Tuple[int, float]:
         """
-        Recognize an artwork from a user's photo
-        
-        Args:
-            query_image: User's photo (numpy array)
-            min_matches: Minimum number of good matches required
-            match_threshold: Ratio test threshold (lower = stricter)
-        
-        Returns:
-            (artwork_id, confidence_score, num_matches) or None
+        Returns: (good_match_count, confidence_score[0..1+])
         """
-        # Extract features from query image
-        query_kp, query_desc = self.extract_features(query_image)
-        
-        if query_desc is None or len(query_desc) == 0:
-            print("No features detected in query image")
-            return None
-        
-        print(f"Detected {len(query_kp)} features in query image")
-        
-        # Load all reference descriptors from database
-        cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT af.artwork_id, af.feature_descriptor, a.title
-            FROM artwork_features af
-            JOIN artworks a ON af.artwork_id = a.id
-        """)
-        
-        best_match = None
-        best_score = 0
-        best_matches_count = 0
-        
-        for artwork_id, descriptor_blob, title in cursor.fetchall():
-            # Deserialize descriptors
-            ref_desc = pickle.loads(descriptor_blob)
-            
-            # Match features using k-nearest neighbors (k=2)
-            try:
-                matches = self.matcher.knnMatch(query_desc, ref_desc, k=2)
-            except cv2.error:
+        try:
+            knn_matches = self.matcher.knnMatch(query_desc, ref_desc, k=2)
+        except cv2.error:
+            return 0, 0.0
+
+        good_matches = []
+        for pair in knn_matches:
+            if len(pair) < 2:
                 continue
-            
-            # Apply Lowe's ratio test to filter good matches
-            good_matches = []
-            for match_pair in matches:
-                if len(match_pair) == 2:
-                    m, n = match_pair
-                    if m.distance < match_threshold * n.distance:
-                        good_matches.append(m)
-            
-            num_good_matches = len(good_matches)
-            
-            # Calculate confidence score
-            if num_good_matches >= min_matches:
-                # Score based on number of matches and average distance
-                avg_distance = sum(m.distance for m in good_matches) / num_good_matches
-                confidence = num_good_matches / (1 + avg_distance / 100)
-                
-                if confidence > best_score:
-                    best_score = confidence
-                    best_match = artwork_id
-                    best_matches_count = num_good_matches
-                    print(f"  Match: {title[:40]} - {num_good_matches} matches, score: {confidence:.2f}")
-        
-        if best_match:
-            return (best_match, best_score, best_matches_count)
-        
-        return None
-    
-    def get_artwork_details(self, artwork_id: int) -> dict:
-        """Fetch full details for a recognized artwork"""
+            m, n = pair
+            if n.distance == 0 and m.distance == 0:
+                good_matches.append(m)
+            elif m.distance < ratio_test * n.distance:
+                good_matches.append(m)
+
+        good_count = len(good_matches)
+        if good_count == 0:
+            return 0, 0.0
+
+        denominator = max(min(len(query_desc), len(ref_desc)), 1)
+        match_ratio = good_count / denominator
+
+        mean_distance = float(np.mean([m.distance for m in good_matches]))
+        distance_quality = max(0.0, 1.0 - (mean_distance / 256.0))
+
+        confidence = (0.7 * match_ratio) + (0.3 * distance_quality)
+        return good_count, confidence
+
+    def _get_artwork_details(self, artwork_id: int) -> Dict[str, object]:
         cursor = self.conn.cursor()
-        cursor.execute("""
-            SELECT met_object_id, title, artist_display_name, date, 
-                   medium, department, description, image_url
-            FROM artworks
-            WHERE id = ?
-        """, (artwork_id,))
-        
+        cursor.execute("SELECT * FROM artworks WHERE id = ?", (artwork_id,))
         row = cursor.fetchone()
-        if row:
-            return {
-                'id': artwork_id,
-                'met_id': row[0],
-                'title': row[1],
-                'artist': row[2],
-                'date': row[3],
-                'medium': row[4],
-                'department': row[5],
-                'description': row[6],
-                'image_url': row[7]
-            }
-        return None
-    
-    def test_recognition(self, test_image_path: str):
+        if row is None:
+            return {"id": artwork_id}
+        return dict(row)
+
+    def recognize_from_path(
+        self,
+        query_image_path: str,
+        confidence_threshold: float = 0.18,
+        ratio_test: float = 0.75,
+        min_good_matches: int = 12,
+    ) -> Optional[Dict[str, object]]:
         """
-        Test recognition on a sample image
-        Useful for debugging and validation
+        Compare query image against all stored ORB descriptors.
+        Returns best artwork match + confidence, or None if below threshold.
         """
-        print(f"\n🧪 Testing recognition on: {test_image_path}")
-        
-        # Load test image
-        test_image = self.load_image(test_image_path)
-        if test_image is None:
-            return
-        
-        # Try to recognize
-        result = self.recognize_artwork(test_image)
-        
-        if result:
-            artwork_id, confidence, num_matches = result
-            details = self.get_artwork_details(artwork_id)
-            
-            print(f"\n✓ RECOGNIZED!")
-            print(f"  Title: {details['title']}")
-            print(f"  Artist: {details['artist']}")
-            print(f"  Confidence: {confidence:.2f}")
-            print(f"  Matches: {num_matches}")
-        else:
-            print("\n✗ Not recognized")
-            print("  Try:")
-            print("  - Taking photo from different angle")
-            print("  - Better lighting")
-            print("  - Getting closer to artwork")
+        query_path = Path(query_image_path)
+        image = cv2.imread(str(query_path))
+        if image is None:
+            raise FileNotFoundError(f"Cannot read query image: {query_path}")
+
+        query_desc = self._extract_orb_descriptors(image)
+        if query_desc is None or len(query_desc) == 0:
+            return None
+
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT artwork_id, feature_descriptor
+            FROM artwork_features
+            WHERE feature_type = 'orb'
+            """
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return None
+
+        best_artwork_id: Optional[int] = None
+        best_confidence = 0.0
+        best_good_matches = 0
+
+        for row in rows:
+            ref_desc = pickle.loads(row["feature_descriptor"])
+            if ref_desc is None or len(ref_desc) == 0:
+                continue
+
+            good_matches, confidence = self._compute_match_confidence(
+                query_desc=query_desc,
+                ref_desc=ref_desc,
+                ratio_test=ratio_test,
+            )
+
+            if confidence > best_confidence:
+                best_confidence = confidence
+                best_good_matches = good_matches
+                best_artwork_id = int(row["artwork_id"])
+
+        if best_artwork_id is None:
+            return None
+
+        if best_confidence < confidence_threshold or best_good_matches < min_good_matches:
+            return None
+
+        artwork = self._get_artwork_details(best_artwork_id)
+        return {
+            "artwork": artwork,
+            "confidence": round(float(best_confidence), 4),
+            "good_matches": int(best_good_matches),
+            "query_features": int(len(query_desc)),
+        }
+
+    def close(self) -> None:
+        self.conn.close()
 
 
-def demo_recognition():
-    """
-    Demo showing how the recognition engine works
-    """
-    print("""
-    ╔══════════════════════════════════════════════════════╗
-    ║   Artwork Recognition Engine Demo                   ║
-    ║   Using ORB Feature Matching                        ║
-    ╚══════════════════════════════════════════════════════╝
-    """)
-    
-    engine = ArtworkRecognitionEngine()
-    
-    print("\n📊 Current Status:")
-    cursor = engine.conn.cursor()
-    
-    cursor.execute("SELECT COUNT(*) FROM artworks")
-    artwork_count = cursor.fetchone()[0]
-    print(f"  Artworks in database: {artwork_count}")
-    
-    cursor.execute("SELECT COUNT(*) FROM artwork_features")
-    features_count = cursor.fetchone()[0]
-    print(f"  Artworks with features: {features_count}")
-    
-    if features_count == 0:
-        print("\n⚠️  No features found!")
-        print("   Run: engine.build_reference_database()")
-        print("   This will process all artworks and extract features")
-    
-    print("\n💡 How it works:")
-    print("  1. User takes photo of artwork")
-    print("  2. Extract ORB features from photo")
-    print("  3. Match against database of reference features")
-    print("  4. Return best match with confidence score")
-    
-    print("\n⚡ Advantages:")
-    print("  ✓ No API costs - runs locally")
-    print("  ✓ Works offline")
-    print("  ✓ Fast (<2 seconds)")
-    print("  ✓ Privacy-friendly (no cloud uploads)")
-    print("  ✓ Handles different angles/lighting")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build and run ORB artwork recognition.")
+    parser.add_argument("--db-path", default="museum_guide.db", help="Path to SQLite DB")
+    parser.add_argument("--images-dir", default="images", help="Directory with artwork images")
+    parser.add_argument(
+        "--build",
+        action="store_true",
+        help="Extract ORB descriptors from /images and save into SQLite",
+    )
+    parser.add_argument(
+        "--query",
+        help="Query image path to recognize against stored artwork descriptors",
+    )
+    parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.18,
+        help="Return None below this confidence",
+    )
+    parser.add_argument(
+        "--ratio-test",
+        type=float,
+        default=0.75,
+        help="Lowe ratio threshold for filtering matches",
+    )
+    parser.add_argument(
+        "--min-good-matches",
+        type=int,
+        default=12,
+        help="Minimum good matches required before returning a result",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    engine = ArtworkRecognitionEngine(db_path=args.db_path, images_dir=args.images_dir)
+    try:
+        if not args.build and not args.query:
+            # Default behavior for first run: build feature DB.
+            args.build = True
+
+        if args.build:
+            stats = engine.build_feature_database()
+            print("Feature extraction summary:")
+            for key, value in stats.items():
+                print(f"  {key}: {value}")
+
+        if args.query:
+            result = engine.recognize_from_path(
+                query_image_path=args.query,
+                confidence_threshold=args.confidence_threshold,
+                ratio_test=args.ratio_test,
+                min_good_matches=args.min_good_matches,
+            )
+            if result is None:
+                print("Recognition result: None (below threshold or no reliable match)")
+            else:
+                artwork = result["artwork"]
+                title = artwork.get("title", "Unknown title")
+                met_id = artwork.get("met_object_id", "Unknown")
+                print("Recognition result:")
+                print(f"  title: {title}")
+                print(f"  met_object_id: {met_id}")
+                print(f"  confidence: {result['confidence']}")
+                print(f"  good_matches: {result['good_matches']}")
+    finally:
+        engine.close()
 
 
 if __name__ == "__main__":
-    demo_recognition()
-    
-    # Example usage:
-    # engine = ArtworkRecognitionEngine()
-    # 
-    # # Build reference database (run once)
-    # engine.build_reference_database()
-    # 
-    # # Test recognition
-    # engine.test_recognition("path/to/test/photo.jpg")
+    main()
