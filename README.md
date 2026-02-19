@@ -60,5 +60,3 @@ If confidence is below threshold, the script returns `None`.
 
 - Recognition quality depends on lighting, angle, and image clarity.
 - The pipeline is designed to run locally and avoid cloud inference costs.
-
-   
