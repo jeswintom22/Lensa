@@ -16,9 +16,53 @@ It recognizes artworks with on-device computer vision (ORB feature matching) and
 - `met_data_pipeline.py`: pulls artwork metadata and downloads images
 - `artwork_recognition.py`: extracts ORB features and performs matching
 - `audio_generator.py`: generates narration audio
-- `flutter_app_structure.dart`: Flutter app skeleton
-- `museum_guide.db`: SQLite database
-- `images/`: artwork image files
+- `bridge_server.py`: FastAPI bridge server for Flutter -> recognition
+- `build_pipeline.py`: runs data -> features -> audio in sequence
+- `verify_db.py`: checks DB + media health
+- `benchmark_recognition.py`: self-consistency recognition benchmark
+- `flutter_app_structure.dart`: legacy Flutter skeleton (reference only)
+- `lib/` + `pubspec.yaml`: Flutter app implementation (created for this repo)
+- `images/`: artwork image files (tracked)
+- `audio/`: narration MP3s (tracked)
+
+Note: `museum_guide.db` is treated as a local/generated artifact and is ignored by git (use the pipeline to regenerate it).
+
+## Quickstart (Local)
+
+### 1) Python backend (bridge server)
+
+```bash
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python bridge_server.py
+```
+
+Health check:
+
+```bash
+python -c "import requests; print(requests.get('http://localhost:8000/health').json())"
+```
+
+### 2) Copy DB + audio into Flutter assets
+
+Flutter reads a bundled SQLite file and audio assets at runtime.
+
+```bash
+New-Item -ItemType Directory -Force -Path assets\database, assets\audio | Out-Null
+Copy-Item museum_guide.db assets\database\museum_guide.db -Force
+Copy-Item audio\*.mp3 assets\audio\ -Force
+```
+
+### 3) Run the Flutter app
+
+This repo does not include the Flutter platform shell folders by default. Create them once:
+
+```bash
+flutter create .
+flutter pub get
+flutter run
+```
 
 ## Setup
 
@@ -61,3 +105,22 @@ If confidence is below threshold, the script returns `None`.
 - Recognition quality depends on lighting, angle, and image clarity.
 - The pipeline is designed to run locally and avoid cloud inference costs.
 
+## Generate DB + assets (optional)
+
+Run everything end-to-end:
+
+```bash
+python build_pipeline.py --limit 100 --db-path museum_guide.db --images-dir images --audio-dir audio
+```
+
+Verify DB/media:
+
+```bash
+python verify_db.py --db-path museum_guide.db --images-dir images --audio-dir audio
+```
+
+Benchmark recognition (self-consistency test):
+
+```bash
+python benchmark_recognition.py --images-dir images --db-path museum_guide.db
+```
