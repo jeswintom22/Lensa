@@ -1,15 +1,4 @@
-"""
-Artwork recognition pipeline for Lensa.
-
-Features:
-1. Load artwork images from ./images.
-2. Extract ORB descriptors with OpenCV.
-3. Save descriptors as SQLite BLOBs.
-4. Accept query image path input.
-5. Compare query descriptors against all stored descriptors.
-6. Return best matching artwork + confidence.
-7. Return None when confidence is below threshold.
-"""
+"""Artwork recognition pipeline for Lensa."""
 
 from __future__ import annotations
 
@@ -24,13 +13,25 @@ import numpy as np
 from tqdm import tqdm
 
 
+DEFAULT_DB_PATH = "museum_guide.db"
+DEFAULT_IMAGES_DIR = "images"
+DEFAULT_NFEATURES = 2000
+DEFAULT_CONFIDENCE_THRESHOLD = 0.18
+DEFAULT_RATIO_TEST = 0.75
+DEFAULT_MIN_GOOD_MATCHES = 12
+SUPPORTED_IMAGE_EXTENSIONS = ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.bmp")
+
+
 class ArtworkRecognitionEngine:
+    """Local ORB-based recognition engine backed by SQLite feature descriptors."""
+
     def __init__(
         self,
-        db_path: str = "museum_guide.db",
-        images_dir: str = "images",
-        nfeatures: int = 2000,
+        db_path: str = DEFAULT_DB_PATH,
+        images_dir: str = DEFAULT_IMAGES_DIR,
+        nfeatures: int = DEFAULT_NFEATURES,
     ) -> None:
+        """Initialize the engine, DB connection, ORB extractor, and matcher."""
         self.db_path = Path(db_path)
         self.images_dir = Path(images_dir)
         self.conn = sqlite3.connect(self.db_path)
@@ -62,10 +63,31 @@ class ArtworkRecognitionEngine:
             return int(stem)
         return None
 
+    @staticmethod
+    def _normalize_query_image(image: np.ndarray) -> Optional[np.ndarray]:
+        """Normalize incoming image to BGR format expected by ORB extraction."""
+        if image is None or image.size == 0:
+            return None
+
+        if len(image.shape) == 2:
+            return cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+        if len(image.shape) == 3 and image.shape[2] == 4:
+            return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+
+        if len(image.shape) == 3 and image.shape[2] == 3:
+            return image
+
+        return None
+
     def _extract_orb_descriptors(self, image: np.ndarray) -> Optional[np.ndarray]:
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        _keypoints, descriptors = self.orb.detectAndCompute(gray, None)
-        return descriptors
+        """Extract ORB descriptors from an image array."""
+        try:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            _keypoints, descriptors = self.orb.detectAndCompute(gray, None)
+            return descriptors
+        except cv2.error:
+            return None
 
     def _load_artwork_index(self) -> Dict[int, sqlite3.Row]:
         cursor = self.conn.cursor()
@@ -78,18 +100,28 @@ class ArtworkRecognitionEngine:
                 index[int(met_id)] = row
         return index
 
+    def _load_feature_rows(self) -> List[sqlite3.Row]:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT artwork_id, feature_descriptor
+            FROM artwork_features
+            WHERE feature_type = 'orb'
+            """
+        )
+        return list(cursor.fetchall())
+
     def build_feature_database(self) -> Dict[str, int]:
         """
-        Load all images from images_dir, extract ORB descriptors,
-        and save descriptors as BLOBs in SQLite.
+        Extract ORB descriptors for all local artwork images and store them in SQLite.
         """
         if not self.images_dir.exists():
             raise FileNotFoundError(f"Images directory not found: {self.images_dir}")
 
         artwork_index = self._load_artwork_index()
         image_paths: List[Path] = []
-        for ext in ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.bmp"):
-            image_paths.extend(self.images_dir.glob(ext))
+        for extension in SUPPORTED_IMAGE_EXTENSIONS:
+            image_paths.extend(self.images_dir.glob(extension))
 
         image_paths = sorted(image_paths)
 
@@ -151,9 +183,7 @@ class ArtworkRecognitionEngine:
         ref_desc: np.ndarray,
         ratio_test: float,
     ) -> Tuple[int, float]:
-        """
-        Returns: (good_match_count, confidence_score[0..1+])
-        """
+        """Return `(good_match_count, confidence_score)` for descriptor comparison."""
         try:
             knn_matches = self.matcher.knnMatch(query_desc, ref_desc, k=2)
         except cv2.error:
@@ -190,35 +220,34 @@ class ArtworkRecognitionEngine:
             return {"id": artwork_id}
         return dict(row)
 
-    def recognize_from_path(
+    def get_artworks_count(self) -> int:
+        """Return the number of artworks currently stored in the DB."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM artworks")
+        row = cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def recognize_from_array(
         self,
-        query_image_path: str,
-        confidence_threshold: float = 0.18,
-        ratio_test: float = 0.75,
-        min_good_matches: int = 12,
+        image: np.ndarray,
+        confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+        ratio_test: float = DEFAULT_RATIO_TEST,
+        min_good_matches: int = DEFAULT_MIN_GOOD_MATCHES,
     ) -> Optional[Dict[str, object]]:
         """
-        Compare query image against all stored ORB descriptors.
-        Returns best artwork match + confidence, or None if below threshold.
-        """
-        query_path = Path(query_image_path)
-        image = cv2.imread(str(query_path))
-        if image is None:
-            raise FileNotFoundError(f"Cannot read query image: {query_path}")
+        Compare a query image array against all stored ORB descriptors.
 
-        query_desc = self._extract_orb_descriptors(image)
+        Returns best artwork match metadata with confidence, or `None`.
+        """
+        normalized_image = self._normalize_query_image(image)
+        if normalized_image is None:
+            return None
+
+        query_desc = self._extract_orb_descriptors(normalized_image)
         if query_desc is None or len(query_desc) == 0:
             return None
 
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT artwork_id, feature_descriptor
-            FROM artwork_features
-            WHERE feature_type = 'orb'
-            """
-        )
-        rows = cursor.fetchall()
+        rows = self._load_feature_rows()
         if not rows:
             return None
 
@@ -256,14 +285,45 @@ class ArtworkRecognitionEngine:
             "query_features": int(len(query_desc)),
         }
 
+    def recognize_from_path(
+        self,
+        query_image_path: str,
+        confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
+        ratio_test: float = DEFAULT_RATIO_TEST,
+        min_good_matches: int = DEFAULT_MIN_GOOD_MATCHES,
+    ) -> Optional[Dict[str, object]]:
+        """
+        Compare a query image file against stored ORB descriptors.
+
+        This method preserves backward compatibility and delegates matching to
+        `recognize_from_array`.
+        """
+        query_path = Path(query_image_path)
+        image = cv2.imread(str(query_path))
+        if image is None:
+            raise FileNotFoundError(f"Cannot read query image: {query_path}")
+
+        return self.recognize_from_array(
+            image=image,
+            confidence_threshold=confidence_threshold,
+            ratio_test=ratio_test,
+            min_good_matches=min_good_matches,
+        )
+
     def close(self) -> None:
+        """Close database resources used by the engine."""
         self.conn.close()
 
 
 def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for build and recognition operations."""
     parser = argparse.ArgumentParser(description="Build and run ORB artwork recognition.")
-    parser.add_argument("--db-path", default="museum_guide.db", help="Path to SQLite DB")
-    parser.add_argument("--images-dir", default="images", help="Directory with artwork images")
+    parser.add_argument("--db-path", default=DEFAULT_DB_PATH, help="Path to SQLite DB")
+    parser.add_argument(
+        "--images-dir",
+        default=DEFAULT_IMAGES_DIR,
+        help="Directory with artwork images",
+    )
     parser.add_argument(
         "--build",
         action="store_true",
@@ -276,30 +336,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--confidence-threshold",
         type=float,
-        default=0.18,
+        default=DEFAULT_CONFIDENCE_THRESHOLD,
         help="Return None below this confidence",
     )
     parser.add_argument(
         "--ratio-test",
         type=float,
-        default=0.75,
+        default=DEFAULT_RATIO_TEST,
         help="Lowe ratio threshold for filtering matches",
     )
     parser.add_argument(
         "--min-good-matches",
         type=int,
-        default=12,
+        default=DEFAULT_MIN_GOOD_MATCHES,
         help="Minimum good matches required before returning a result",
     )
     return parser.parse_args()
 
 
 def main() -> None:
+    """Run descriptor building and/or one-off recognition from the CLI."""
     args = parse_args()
     engine = ArtworkRecognitionEngine(db_path=args.db_path, images_dir=args.images_dir)
     try:
         if not args.build and not args.query:
-            # Default behavior for first run: build feature DB.
             args.build = True
 
         if args.build:
