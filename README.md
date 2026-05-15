@@ -26,6 +26,64 @@ python bridge_server.py
 ### 6. Run the app
 flutter run
 
+## Contributing
+
+If you'd like to contribute or set up the project locally, follow the copy-paste commands below for your platform. These reproduce the steps in "Getting Started" with exact commands.
+
+Windows (PowerShell):
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+# generate or update the local DB (run from repo root)
+python build_pipeline.py --limit 100
+
+# copy generated assets into Flutter
+mkdir assets\database assets\audio
+copy museum_guide.db assets\database\museum_guide.db
+copy audio\*.mp3 assets\audio\
+
+# create Flutter project files (only needed once)
+d:\projects\Lensa\flutter\bin\flutter.bat create --project-name lensa .
+d:\projects\Lensa\flutter\bin\flutter.bat pub get
+
+# start bridge server (keep running)
+python bridge_server.py
+
+# run app
+d:\projects\Lensa\flutter\bin\flutter.bat run
+```
+
+macOS / Linux (bash):
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# generate or update the local DB
+python build_pipeline.py --limit 100
+
+# copy generated assets into Flutter
+mkdir -p assets/database assets/audio
+cp museum_guide.db assets/database/museum_guide.db
+cp audio/*.mp3 assets/audio/
+
+# create Flutter project files (only needed once)
+/path/to/flutter/bin/flutter create --project-name lensa .
+/path/to/flutter/bin/flutter pub get
+
+# start bridge server (keep running)
+python bridge_server.py
+
+# run app
+/path/to/flutter/bin/flutter run
+```
+
+Tips:
+- Replace `/path/to/flutter` with your Flutter SDK path if `flutter` isn't on your PATH.
+- The `assets/database` and `assets/audio` folders are tracked only with placeholder `.gitkeep` files; copy the generated `museum_guide.db` and audio files into those folders locally.
+
 # Lensa
 
 Lensa is a free mobile museum guide for The Metropolitan Museum of Art.
