@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Environment / secrets
 .env
 .env.*
@@ -61,3 +62,26 @@ ios/Flutter/ephemeral/
 .vscode/
 .DS_Store
 Thumbs.db
+=======
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+*.g.dart
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated data (must be regenerated locally via build_pipeline.py)
+museum_guide.db
+assets/database/museum_guide.db
+
+# IDE
+.idea/
+.vscode/
+*.iml
+>>>>>>> 5170222 (chore: scaffold Flutter app and finalize setup fixes)

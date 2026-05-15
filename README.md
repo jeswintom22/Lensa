@@ -1,3 +1,31 @@
+## Getting Started (First Time Setup)
+
+Complete these steps in order before running the app.
+
+### 1. Install Python dependencies
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+source .venv/bin/activate     # macOS/Linux
+pip install -r requirements.txt
+
+### 2. Run the data pipeline
+python build_pipeline.py --limit 100
+
+### 3. Copy generated assets into Flutter
+mkdir -p assets/database assets/audio
+cp museum_guide.db assets/database/museum_guide.db
+cp audio/*.mp3 assets/audio/
+
+### 4. Set up Flutter
+flutter create .
+flutter pub get
+
+### 5. Start the bridge server (keep this running)
+python bridge_server.py
+
+### 6. Run the app
+flutter run
+
 # Lensa
 
 Lensa is a free mobile museum guide for The Metropolitan Museum of Art.

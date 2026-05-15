@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -14,11 +15,20 @@ const String databaseAssetPath = 'assets/database/museum_guide.db';
 const List<String> artworkColumns = <String>[
   'id',
   'met_object_id',
+=======
+const String databaseFileName = 'museum_guide.db';
+const String databaseAssetDirectory = 'assets/database';
+
+const List<String> artworkColumns = <String>[
+  'id',
+  'object_id',
+>>>>>>> 5170222 (chore: scaffold Flutter app and finalize setup fixes)
   'title',
   'artist',
   'date',
   'medium',
   'department',
+<<<<<<< HEAD
   'image_url',
   'audio_file_path',
 ];
@@ -202,4 +212,15 @@ class DatabaseService {
     _database = await _openDatabase();
     return _database!;
   }
+=======
+  'image_path',
+  'audio_path',
+  'description',
+];
+
+const String artworkTableName = 'artworks';
+
+class DatabaseService {
+  const DatabaseService();
+>>>>>>> 5170222 (chore: scaffold Flutter app and finalize setup fixes)
 }
