@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Environment / secrets
 .env
 .env.*
@@ -7,7 +6,6 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyd
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -28,33 +26,29 @@ museum_guide.db
 *.db-shm
 
 # Generated Flutter asset copies (created by setup)
+# ignore generated asset contents, but keep placeholders
 assets/database/
 assets/audio/
+!assets/database/.gitkeep
+!assets/audio/.gitkeep
 
 # Flutter / Dart
 .dart_tool/
-.packages
 .flutter-plugins
 .flutter-plugins-dependencies
 build/
-coverage/
+*.g.dart
 
-# Android
-android/.gradle/
-android/local.properties
-android/**/GeneratedPluginRegistrant.java
-android/**/key.properties
-*.jks
-*.keystore
+# Platform folders (do not commit platform-specific builds)
+android/
+ios/
+linux/
+macos/
+web/
+windows/
 
-# iOS
-ios/Pods/
-ios/.symlinks/
-ios/Flutter/Flutter.framework
-ios/Flutter/App.framework
-ios/Flutter/Generated.xcconfig
-ios/Flutter/flutter_export_environment.sh
-ios/Flutter/ephemeral/
+# iOS extras (kept for parity but platform dir ignored above)
+# (kept for reference)
 
 # IDE / OS
 .idea/
@@ -62,26 +56,9 @@ ios/Flutter/ephemeral/
 .vscode/
 .DS_Store
 Thumbs.db
-=======
-# Flutter
-.dart_tool/
-.flutter-plugins
-.flutter-plugins-dependencies
-build/
-*.g.dart
 
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
+# Keep lockfiles local
+pubspec.lock
 
-# Generated data (must be regenerated locally via build_pipeline.py)
-museum_guide.db
-assets/database/museum_guide.db
-
-# IDE
-.idea/
-.vscode/
-*.iml
->>>>>>> 5170222 (chore: scaffold Flutter app and finalize setup fixes)
+# Keep IDE and local metadata out
+.metadata
